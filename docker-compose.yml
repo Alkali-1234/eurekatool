@@ -1,0 +1,13 @@
+services:
+  fps-runner:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      - fps-data:/data
+    environment:
+      MAX_CONCURRENT: "2"
+    restart: unless-stopped
+
+volumes:
+  fps-data:

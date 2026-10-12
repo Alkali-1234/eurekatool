@@ -1,0 +1,7 @@
+numpy>=2.0
+scipy>=1.13
+matplotlib>=3.9
+obspy>=1.4
+rich>=13
+plotext==5.3.2   # 6.x changed the API used in fps_common/wizard.py
+sympy>=1.13      # only for reference/verify_eom.py
