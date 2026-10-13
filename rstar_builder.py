@@ -10,7 +10,8 @@ Modes:
   python rstar_builder.py                     interactive wizard (terminal)
   python rstar_builder.py --u-cap-mm 30 ...   plain CLI, human-readable summary
   python rstar_builder.py --json ...          one JSON object on stdout, NDJSON progress on stderr
-Outputs (folder under out/ or --out): grid.csv, L_of_R.pdf/.png, result.json
+Outputs (folder under out/ or --out): grid.csv, L_of_R.pdf/.png, result.json, and timeseries.csv (every time step
+at R*, only when a feasible R* exists)
 """
 import argparse, pathlib, shlex, sys
 
@@ -127,7 +128,7 @@ def sweep(wave, R, mu, p, dt, v_eps, duration, progress=None):
     nan = lambda v: np.where(ok, v, np.nan)  # noqa: E731
     return dict(R_m=R, u_max_mm=nan(m["u_max"] * 1e3), a_rms_g=nan(m["a_rms_g"]), a_max_g=nan(m["a_max_g"]),
                 L_g=nan(L), ok=ok, params=dict(mu=mu, p=p, dt=dt, v_eps=v_eps, duration_s=duration),
-                warnings=warnings)
+                warnings=warnings, series=out)
 
 
 def select_rstar(sw, u_cap_mm):
@@ -158,6 +159,25 @@ def grid_rows(sw, feas):
 
 
 GRID_HEADER = ["R_m", "u_max_mm", "a_rms_g", "a_max_g", "L_g", "feasible"]
+TIMESERIES_HEADER = ["t_s", "ag_g", "theta_rad", "theta_dot_rad_s", "theta_ddot_rad_s2", "u_mm", "u_dot_m_s",
+                     "u_ddot_m_s2", "a_abs_g"]
+
+
+def timeseries(sw, i):
+    """Every simulated time step for grid radius i, as columns in TIMESERIES_HEADER order.
+    u = x is the signed slider displacement relative to the dish, theta the polar angle with sin(theta) = u/R, so
+        theta_dot = u_dot / c,  theta_ddot = u_ddot / c + u u_dot^2 / c^3,  c = sqrt(R^2 - u^2) = R cos(theta).
+    u_ddot is the relative acceleration (a_abs - ag); a_abs is the transmitted acceleration (CLAUDE.md §3.5)."""
+    s, R = sw["series"], sw["R_m"][i]
+    u, ud, a_abs, ag = s["x"][:, i], s["v"][:, i], s["a_abs"][:, i], s["ag"]
+    udd = a_abs - ag
+    c = np.sqrt(R * R - u * u)
+    return np.column_stack([s["t"], ag / G, np.arcsin(u / R), ud / c, udd / c + u * ud * ud / c ** 3, u * 1e3, ud,
+                            udd, a_abs / G])
+
+
+def write_timeseries(path, sw, i):
+    np.savetxt(path, timeseries(sw, i), fmt="%.10g", delimiter=",", header=",".join(TIMESERIES_HEADER), comments="")
 
 
 # ----------------------------------------------------------------------------------------------- plotting
@@ -273,12 +293,15 @@ def run(argv, chan, ui=None):
     outdir = make_outdir(a.out, "rstar", wave.meta["name"], pga_tag, "ucap%smm" % fmt_tag(a.u_cap_mm))
     files = dict(grid_csv=outdir / "grid.csv", result_json=outdir / "result.json")
     write_csv(files["grid_csv"], GRID_HEADER, grid_rows(sw, sel["feasible"]))
+    if sel["status"] == "ok":
+        files["timeseries_csv"] = outdir / "timeseries.csv"
+        write_timeseries(files["timeseries_csv"], sw, sel["index"])
     files["plot_pdf"], files["plot_png"] = plot_rstar(sw, sel, outdir / "L_of_R", describe(wave, phys))
 
     res = dict(ok=True, status=sel["status"], r_star_m=sel["r_star_m"], L_star_g=sel["L_star_g"],
                u_max_star_mm=sel["u_max_star_mm"], a_max_star_g=sel["a_max_star_g"],
                a_rms_star_g=sel["a_rms_star_g"], at_grid_edge=sel["at_grid_edge"], n_feasible=sel["n_feasible"],
-               u_cap_mm=a.u_cap_mm, warnings=sw["warnings"] + (
+               u_cap_mm=a.u_cap_mm, timeseries_csv="timeseries.csv" if sel["status"] == "ok" else None, warnings=sw["warnings"] + (
                    ["R* is at the edge of the R grid; widen --r-min/--r-max"] if sel["at_grid_edge"] else []),
                inputs=dict(**sw["params"], r_min=a.r_min, r_max=a.r_max, n_r=a.n_r,
                            command=command_line("rstar_builder.py", [s for s in argv if s != "--json"])),

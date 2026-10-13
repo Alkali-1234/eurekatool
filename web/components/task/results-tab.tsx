@@ -19,6 +19,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { DataTable, type Column } from "@/components/task/data-table"
 import { CapChart, GridCharts, lossLabel } from "@/components/task/result-charts"
 import { RunProgress } from "@/components/task/run-progress"
+import { TimeseriesView } from "@/components/task/timeseries-view"
 import { StatusBadge } from "@/components/status-badge"
 import { api, archiveUrl, fileUrl } from "@/lib/api"
 import { fmt } from "@/lib/format"
@@ -29,6 +30,7 @@ const FILE_META: Record<string, { label: string; icon: React.ComponentType }> = 
   "grid.csv": { label: "R grid (grid.csv)", icon: FileSpreadsheetIcon },
   "table.csv": { label: "Cap table (table.csv)", icon: FileSpreadsheetIcon },
   "sweep_grid.csv": { label: "R sweep (sweep_grid.csv)", icon: FileSpreadsheetIcon },
+  "timeseries.csv": { label: "Time steps at R* (timeseries.csv)", icon: FileSpreadsheetIcon },
   "L_of_R.pdf": { label: "Figure (PDF)", icon: FileIcon },
   "L_of_R.png": { label: "Figure (PNG)", icon: ImageIcon },
   "umax_table.pdf": { label: "Figure (PDF)", icon: FileIcon },
@@ -96,25 +98,37 @@ export function ResultsTab({ task, runId, onRunId }: { task: Task; runId: string
   )
 }
 
+// umax_table_builder.py: one time series per distinct R*, e.g. timeseries_R0.275246m.csv
+const TS_FILE = /^timeseries_R([0-9.e+-]+)m(_i\d+)?\.csv$/
+
+function fileMeta(f: string) {
+  const m = TS_FILE.exec(f)
+  return FILE_META[f] ?? (m ? { label: `Time steps at R* = ${m[1]} m`, icon: FileSpreadsheetIcon } : undefined)
+}
+
 function Downloads({ task, run }: { task: Task; run: Run }) {
-  const files = (run.files ?? []).filter((f) => f in FILE_META)
+  const files = (run.files ?? []).filter((f) => fileMeta(f))
   const order = Object.keys(FILE_META)
-  files.sort((a, b) => order.indexOf(a) - order.indexOf(b))
+  const rank = (f: string) => {
+    const m = TS_FILE.exec(f)
+    return m ? order.indexOf("timeseries.csv") + Number(m[1]) * 1e-6 : order.indexOf(f)
+  }
+  files.sort((a, b) => rank(a) - rank(b))
   return (
     <DropdownMenu>
       <DropdownMenuTrigger render={<Button variant="outline" size="sm" className="ml-auto" />}>
         <DownloadIcon data-icon="inline-start" />
         Download
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-60">
+      <DropdownMenuContent align="end" className="max-h-96 w-64 overflow-y-auto">
         <DropdownMenuGroup>
           <DropdownMenuLabel>Outputs of this run</DropdownMenuLabel>
           {files.map((f) => {
-            const Icon = FILE_META[f].icon
+            const { icon: Icon, label } = fileMeta(f)!
             return (
               <DropdownMenuItem key={f} render={<a href={fileUrl(task.id, run.id, f, true)} download />}>
                 <Icon />
-                {FILE_META[f].label}
+                {label}
               </DropdownMenuItem>
             )
           })}
@@ -283,7 +297,43 @@ function RstarView({ task, run, r }: { task: Task; run: Run; r: RstarResult }) {
           <DataTable columns={cols} rows={rows} muted={(x) => !x.f} highlight={(x) => x.R === r.r_star_m} />
         </CardContent>
       </Card>
+      {r.timeseries_csv && <TimeseriesCard task={task} run={run} row={r} />}
     </>
+  )
+}
+
+/** Every simulated time step at R* for one cap (absent for infeasible caps and for runs made before it existed). */
+function TimeseriesCard({ task, run, row }: { task: Task; run: Run; row: CapRow }) {
+  const file = row.timeseries_csv
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Time steps at R*{row.status === "ok" && ` = ${fmt(row.r_star_m, 4)} m`}</CardTitle>
+        <CardDescription>
+          {file ? (
+            <>
+              <span className="font-mono">{file}</span>: θ, u, their first and second time derivatives and the accelerations at every RK4 step (u_cap ={" "}
+              {fmt(row.u_cap_mm)} mm). Charts show a peak-preserving subset; the table and CSV have every step.
+            </>
+          ) : (
+            <>No feasible R for u_cap = {fmt(row.u_cap_mm)} mm, so there is no time series.</>
+          )}
+        </CardDescription>
+        {file && (
+          <CardAction>
+            <Button variant="ghost" size="sm" nativeButton={false} render={<a href={fileUrl(task.id, run.id, file, true)} download />}>
+              <DownloadIcon data-icon="inline-start" />
+              CSV
+            </Button>
+          </CardAction>
+        )}
+      </CardHeader>
+      {file && (
+        <CardContent>
+          <TimeseriesView key={file} taskId={task.id} runId={run.id} file={file} uCap={row.u_cap_mm} />
+        </CardContent>
+      )}
+    </Card>
   )
 }
 
@@ -375,6 +425,7 @@ function UmaxView({ task, run, r }: { task: Task; run: Run; r: UmaxResult }) {
           <DataTable columns={gcols} rows={sweepRows} muted={(x) => !x.f} highlight={(x) => x.R === capRes.r_star_m} />
         </CardContent>
       </Card>
+      {capRes.timeseries_csv !== undefined && <TimeseriesCard task={task} run={run} row={capRes} />}
     </>
   )
 }

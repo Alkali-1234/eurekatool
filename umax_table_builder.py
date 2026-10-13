@@ -10,7 +10,8 @@ Modes:
   python umax_table_builder.py --u-min-mm 20 --u-max-mm 40 --du-mm 1  plain CLI
   python umax_table_builder.py --json ...                             one JSON object on stdout (each cap's full
                                                                       grid-search result), NDJSON progress on stderr
-Outputs (folder under out/ or --out): table.csv, sweep_grid.csv, umax_table.pdf/.png, result.json
+Outputs (folder under out/ or --out): table.csv, sweep_grid.csv, umax_table.pdf/.png, result.json, and
+timeseries_R<R*>m.csv (every time step at R*) for each distinct R*; caps that share an R* share the file
 """
 import pathlib, sys
 
@@ -23,11 +24,11 @@ from fps_common import InputError  # noqa: E402
 from fps_common.io import run_json_main, make_outdir, write_csv, write_json, fmt_tag  # noqa: E402
 from rstar_builder import (Parser, add_common_args, waveform_from_args, r_grid_from_args, physics_from_args,  # noqa: E402
                            sweep, select_rstar, grid_dict, grid_rows, GRID_HEADER, loss_label, describe,
-                           command_line)
+                           command_line, write_timeseries)
 
 MAX_CAPS = 10000
 TABLE_HEADER = ["u_cap_mm", "status", "R_star_m", "L_star_g", "u_max_at_Rstar_mm", "a_max_actual_g", "a_rms_g",
-                "n_feasible", "R_star_at_grid_edge"]
+                "n_feasible", "R_star_at_grid_edge", "timeseries_csv"]
 
 
 def cap_list(u_min, u_max, du):
@@ -90,24 +91,30 @@ def run(argv, chan, ui=None):
     else:
         sw = sweep(wave, R, progress=chan.progress_cb("simulate"), **phys)
 
-    results, table = [], []
-    for u in caps:
-        sel = select_rstar(sw, u)
-        row = dict(u_cap_mm=float(u), status=sel["status"], r_star_m=sel["r_star_m"], L_star_g=sel["L_star_g"],
-                   u_max_star_mm=sel["u_max_star_mm"], a_max_star_g=sel["a_max_star_g"],
-                   a_rms_star_g=sel["a_rms_star_g"], n_feasible=sel["n_feasible"], at_grid_edge=sel["at_grid_edge"])
-        table.append(row)
-        results.append(dict(row, grid=grid_dict(sw, sel["feasible"])))
-
     pga_tag = "pga" + fmt_tag(a.pga) if a.pga is not None else "native"
     outdir = make_outdir(a.out, "umaxtable", wave.meta["name"], pga_tag,
                          "ucap%s-%smm" % (fmt_tag(caps[0]), fmt_tag(caps[-1])))
+
+    results, table, series = [], [], {}            # series: grid index of an R* -> its time-series file name
+    for u in caps:
+        sel = select_rstar(sw, u)
+        i = sel["index"]
+        if i is not None and i not in series:
+            name = "timeseries_R%sm.csv" % fmt_tag(sw["R_m"][i])
+            series[i] = name if name not in series.values() else "timeseries_R%sm_i%d.csv" % (fmt_tag(sw["R_m"][i]), i)
+            write_timeseries(outdir / series[i], sw, i)
+        row = dict(u_cap_mm=float(u), status=sel["status"], r_star_m=sel["r_star_m"], L_star_g=sel["L_star_g"],
+                   u_max_star_mm=sel["u_max_star_mm"], a_max_star_g=sel["a_max_star_g"],
+                   a_rms_star_g=sel["a_rms_star_g"], n_feasible=sel["n_feasible"], at_grid_edge=sel["at_grid_edge"],
+                   timeseries_csv=series.get(i))
+        table.append(row)
+        results.append(dict(row, grid=grid_dict(sw, sel["feasible"])))
     files = dict(table_csv=outdir / "table.csv", sweep_csv=outdir / "sweep_grid.csv",
                  result_json=outdir / "result.json")
     write_csv(files["table_csv"], TABLE_HEADER,
               [(r["u_cap_mm"], r["status"], r["r_star_m"], r["L_star_g"], r["u_max_star_mm"], r["a_max_star_g"],
-                r["a_rms_star_g"], r["n_feasible"], "" if r["at_grid_edge"] is None else int(r["at_grid_edge"]))
-               for r in table])
+                r["a_rms_star_g"], r["n_feasible"], "" if r["at_grid_edge"] is None else int(r["at_grid_edge"]),
+                r["timeseries_csv"]) for r in table])
     write_csv(files["sweep_csv"], GRID_HEADER[:-1], [row[:-1] for row in grid_rows(sw, sw["ok"])])
     files["plot_pdf"], files["plot_png"] = plot_table(table, outdir / "umax_table", describe(wave, phys), a.p)
 

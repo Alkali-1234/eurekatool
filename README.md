@@ -4,8 +4,8 @@ Two scripts for the spherical FPS isolator study (physics and conventions: `CLAU
 
 | Script | What it does | Files written |
 |---|---|---|
-| `rstar_builder.py` | Grid search of the dish radius R for one waveform and one travel cap `u_cap`. Plots L(R) and highlights R\*. | `grid.csv`, `L_of_R.pdf/.png`, `result.json` |
-| `umax_table_builder.py` | R\* for every `u_cap` from `--u-min-mm` to `--u-max-mm` in steps of `--du-mm`. | `table.csv`, `sweep_grid.csv`, `umax_table.pdf/.png`, `result.json` |
+| `rstar_builder.py` | Grid search of the dish radius R for one waveform and one travel cap `u_cap`. Plots L(R) and highlights R\*. | `grid.csv`, `L_of_R.pdf/.png`, `result.json`, `timeseries.csv` (if R\* exists) |
+| `umax_table_builder.py` | R\* for every `u_cap` from `--u-min-mm` to `--u-max-mm` in steps of `--du-mm`. | `table.csv`, `sweep_grid.csv`, `umax_table.pdf/.png`, `result.json`, `timeseries_R<R*>m.csv` per distinct R\* |
 
 Outputs go to `out/<auto-name>_<timestamp>/`, or to `--out DIR`.
 
@@ -21,9 +21,10 @@ python3.13 -m venv .venv
 
 ## What is computed
 
-- Simulator: `fps_ref.py` (CLAUDE.md A.2): a batched RK4 over all R values, with Coulomb friction regularised by `tanh(v/v_eps)`. The only change from the appendix is an optional `progress` callback, which does not affect the numerics.
+- Simulator: `fps_ref.py` (CLAUDE.md A.2): a batched RK4 over all R values, with Coulomb friction regularised by `tanh(v/v_eps)`. The only changes from the appendix are an optional `progress` callback and two extra returned series (`v`, the slider velocity, and `ag`, the ground acceleration at each step). Neither affects the numerics.
 - Loss: `L_p(R) = (mean_t |a_abs|^p)^(1/p)` in g, where `a_abs` is the transmitted acceleration. `--p 2` (the default) is `a_rms`, the notes' L2 loss. `--p inf` is the peak.
 - Feasibility: `u_max(R) <= u_cap`. **R\*** is the minimiser of L over the feasible grid points. If no point is feasible, `status = "infeasible"` and `r_star_m = null`. A radius whose slider runs past the edge of the spherical cap (the simulation diverges) counts as infeasible and produces a warning.
+- **Time steps at R\*.** When a feasible R\* exists, every RK4 step at R\* is written to a CSV with columns `t_s, ag_g, theta_rad, theta_dot_rad_s, theta_ddot_rad_s2, u_mm, u_dot_m_s, u_ddot_m_s2, a_abs_g`. `u` is the signed slider displacement relative to the dish, θ = arcsin(u/R), θ̇ = u̇/(R cos θ), θ̈ = ü/(R cos θ) + u u̇²/(R cos θ)³, `u_ddot` is the relative acceleration (a_abs − a_g) and `a_abs` the transmitted one. The columns are taken from the same batched run as the grid, so max |u| and the peak/RMS of `a_abs` equal the reported `u_max`, `a_max` and `a_rms` exactly. About 1.9 MB per file for 30 s at dt = 0.002 s. `umax_table_builder.py` writes one file per distinct R\* (`timeseries_R0.275246m.csv`); caps that share an R\* share the file.
 - `umax_table_builder.py` simulates the R grid once and applies each cap to that sweep. It gives the same R\* as running `rstar_builder.py` once per cap (checked at 30 and 33 mm).
 - Defaults: μ = 0.10, dt = 0.002 s, v_eps = 1e-3 m/s, R = geomspace(0.15, 6.0, 80) (160 for the table), duration = the whole record. **There is no default target PGA**: El Centro runs at its native 0.3188 g unless `--pga` is given.
 
@@ -58,19 +59,19 @@ The wizard prints the equivalent command line, so any interactive run can be rep
 `rstar_builder.py --json` returns:
 ```
 { ok, status: "ok"|"infeasible", r_star_m, L_star_g, u_max_star_mm, a_max_star_g, a_rms_star_g,
-  at_grid_edge, n_feasible, u_cap_mm, warnings[], inputs{..., command}, waveform{name, sha256, pga_native_g, pga_used_g, ...},
-  grid{R_m[], u_max_mm[], L_g[], a_max_g[], a_rms_g[], feasible[]}, files{grid_csv, plot_pdf, plot_png, result_json} }
+  at_grid_edge, n_feasible, u_cap_mm, timeseries_csv, warnings[], inputs{..., command}, waveform{name, sha256, pga_native_g, pga_used_g, ...},
+  grid{R_m[], u_max_mm[], L_g[], a_max_g[], a_rms_g[], feasible[]}, files{grid_csv, timeseries_csv, plot_pdf, plot_png, result_json} }
 ```
 
 `umax_table_builder.py --json` returns:
 ```
 { ok, n_caps, n_infeasible, warnings[], inputs{...}, waveform{...},
-  table[{u_cap_mm, status, r_star_m, L_star_g, u_max_star_mm, a_max_star_g, a_rms_star_g, n_feasible, at_grid_edge}],
+  table[{u_cap_mm, status, r_star_m, L_star_g, u_max_star_mm, a_max_star_g, a_rms_star_g, n_feasible, at_grid_edge, timeseries_csv}],
   results[{...same fields..., grid{R_m[], u_max_mm[], L_g[], a_max_g[], a_rms_g[], feasible[]}}],   // one per cap
   files{table_csv, sweep_csv, plot_pdf, plot_png, result_json} }
 ```
 
-NaN values (diverged radii) appear as `null`. Use `.venv/bin/python` as the interpreter. A working example is in `examples/call_from_node.mjs` (`node examples/call_from_node.mjs`).
+`timeseries_csv` is the file name (in the output folder) of that cap's time steps at R\*, or `null` when infeasible; `files.timeseries_csv` is absent then. The time series itself is not in the JSON. NaN values (diverged radii) appear as `null`. Use `.venv/bin/python` as the interpreter. A working example is in `examples/call_from_node.mjs` (`node examples/call_from_node.mjs`).
 
 ## Verification (run 2026-10-12)
 
@@ -95,7 +96,9 @@ Open `http://localhost:3000`. From a phone or laptop on the same network, use `h
 
 **How it runs the scripts.** Route handlers in `web/app/api/` start `.venv/bin/python <script> --json ... --out web-data/tasks/<task>/runs/<run>/`, using the `--json` contract above (as in `examples/call_from_node.mjs`). Progress events go to the browser over server-sent events. The Python scripts are unchanged. `waveform_tool.py` is the only addition: it powers the waveform inspector (`channels PATH`, `preview <waveform flags>`) through the same `waveform_from_args`, so the preview is exactly what a run simulates.
 
-**Storage.** `web-data/tasks/<id>/task.json` holds the task and its run history, and each run folder holds `grid.csv` / `table.csv` / `sweep_grid.csv`, the PDF/PNG figure, `result.json` and `log.txt`. Uploaded records go to `web-data/uploads/`. Uploads are never overwritten, so old runs stay reproducible. If the server stops mid-run, the run is killed and shows as *interrupted* after a restart.
+**Time steps at R\*.** The results page has a *Time steps at R\** card (for a table run, it follows the selected cap). It charts u, θ, dθ/dt, d²θ/dt² or the transmitted vs ground acceleration (a peak-preserving subset of the points), lists every step in a sortable table, and links the CSV.
+
+**Storage.** `web-data/tasks/<id>/task.json` holds the task and its run history, and each run folder holds `grid.csv` / `table.csv` / `sweep_grid.csv`, the `timeseries*.csv` files, the PDF/PNG figure, `result.json` and `log.txt`. Uploaded records go to `web-data/uploads/`. Uploads are never overwritten, so old runs stay reproducible. If the server stops mid-run, the run is killed and shows as *interrupted* after a restart.
 
 **Waveform library.** The source picker lists built-in El Centro, every `.csv/.txt/.dat/.mseed` under `data/`, `indonesia_raw_waveforms (1)/raw/` and `severe_records/raw/`, and uploads. `.xml` files are offered as StationXML inventories. The server only accepts paths inside those folders.
 

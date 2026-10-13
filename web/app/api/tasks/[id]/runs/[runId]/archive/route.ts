@@ -1,7 +1,7 @@
 import fs from "node:fs/promises"
 import path from "node:path"
 import JSZip from "jszip"
-import { contentDisposition, downloadName, locateRun, OUTPUT_FILES } from "@/lib/server/files"
+import { contentDisposition, downloadName, isOutputFile, locateRun } from "@/lib/server/files"
 import { handle, notFound } from "@/lib/server/http"
 
 export const dynamic = "force-dynamic"
@@ -12,7 +12,7 @@ export const GET = handle(async (_req: Request, ctx: { params: Promise<{ id: str
   if (!loc) return notFound("run not found")
   const zip = new JSZip()
   const folder = zip.folder(runId)!
-  const names = (await fs.readdir(loc.dir).catch(() => [] as string[])).filter((n) => OUTPUT_FILES.has(n))
+  const names = (await fs.readdir(loc.dir).catch(() => [] as string[])).filter(isOutputFile)
   for (const n of names) folder.file(n, await fs.readFile(path.join(loc.dir, n)))
   folder.file("command.txt", loc.run.command + "\n")
   const buf = await zip.generateAsync({ type: "uint8array", compression: "DEFLATE" })

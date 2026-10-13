@@ -102,6 +102,8 @@ export type CapRow = {
   a_rms_star_g: number | null
   n_feasible: number
   at_grid_edge: boolean | null
+  /** File with every time step at R* (null when infeasible; absent in runs made before it existed) */
+  timeseries_csv?: string | null
 }
 
 export type RstarResult = CapRow & {

@@ -253,3 +253,6 @@ def show_table(res):
     console.print(t)
     _warnings(res)
     _files(res)
+    ts = sorted({r["timeseries_csv"] for r in rows if r["timeseries_csv"]})
+    if ts:
+        console.print("  time series at R*: " + "  ".join(ts))

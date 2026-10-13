@@ -6,8 +6,12 @@ import { getRun, getTask, runDir } from "./store"
 // Only the files the builders write (plus the run log) are served.
 export const OUTPUT_FILES = new Set([
   "grid.csv", "table.csv", "sweep_grid.csv", "result.json", "log.txt",
-  "L_of_R.pdf", "L_of_R.png", "umax_table.pdf", "umax_table.png",
+  "L_of_R.pdf", "L_of_R.png", "umax_table.pdf", "umax_table.png", "timeseries.csv",
 ])
+// umax_table_builder.py writes one time series per distinct R*: timeseries_R0.275246m.csv (rarely with _i<index>)
+const TIMESERIES_FILE = /^timeseries_R[0-9.e+-]+m(_i\d+)?\.csv$/
+
+export const isOutputFile = (name: string) => OUTPUT_FILES.has(name) || TIMESERIES_FILE.test(name)
 
 export const CONTENT_TYPES: Record<string, string> = {
   ".csv": "text/csv; charset=utf-8",
@@ -26,7 +30,7 @@ export async function locateRun(taskId: string, runId: string) {
 }
 
 export async function readOutput(dir: string, name: string) {
-  if (!OUTPUT_FILES.has(name)) return null
+  if (!isOutputFile(name)) return null
   try {
     return await fs.readFile(path.join(dir, name))
   } catch {
