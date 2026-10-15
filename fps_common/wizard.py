@@ -110,16 +110,21 @@ def ask_waveform():
 def ask_physics(n_r_default):
     console.rule("[bold]Physics and R grid")
     argv = []
-    mu = ask_number("Friction coefficient mu", DEF["mu"], check=lambda v: v >= 0, why="must be >= 0")
+    mu_s = ask_number("Static friction coefficient mu_s", DEF["mu"], check=lambda v: v >= 0, why="must be >= 0")
+    mu_k = ask_number("Kinetic friction coefficient mu_k", mu_s, check=lambda v: 0 <= v <= mu_s,
+                      why="must be between 0 and mu_s")
     p = ask_number("Loss norm p (2 = RMS, inf = peak)", DEF["p"], check=lambda v: v >= 1, why="must be >= 1")
     r_min = ask_number("R min [m]", DEF["r_min"], check=lambda v: v > 0, why="must be > 0")
     r_max = ask_number("R max [m]", DEF["r_max"], check=lambda v: v > r_min, why="must be > R min")
     n_r = ask_number("Number of R values (log-spaced)", n_r_default, cast=int, check=lambda v: v >= 2)
-    argv += ["--mu", "%g" % mu, "--p", "%g" % p, "--r-min", "%g" % r_min, "--r-max", "%g" % r_max, "--n-r", str(n_r)]
-    if Confirm.ask(escape("Change numerical settings (dt = %g s, v_eps = %g m/s)?" % (DEF["dt"], DEF["v_eps"])), default=False):
+    argv += ["--mu", "%g" % mu_s] if mu_s == mu_k else ["--mu-s", "%g" % mu_s, "--mu-k", "%g" % mu_k]
+    argv += ["--p", "%g" % p, "--r-min", "%g" % r_min, "--r-max", "%g" % r_max, "--n-r", str(n_r)]
+    if Confirm.ask(escape("Change numerical settings (dt = %g s, friction model = stickslip)?" % DEF["dt"]), default=False):
         dt = ask_number("Time step dt [s]", DEF["dt"], check=lambda v: v > 0)
-        ve = ask_number("Friction regularisation v_eps [m/s]", DEF["v_eps"], check=lambda v: v > 0)
-        argv += ["--dt", "%g" % dt, "--v-eps", "%g" % ve]
+        argv += ["--dt", "%g" % dt]
+        if mu_s == mu_k and Prompt.ask("Friction model", choices=["stickslip", "tanh"], default="stickslip") == "tanh":
+            ve = ask_number("Friction regularisation v_eps [m/s]", DEF["v_eps"], check=lambda v: v > 0)
+            argv += ["--friction", "tanh", "--v-eps", "%g" % ve]
     return argv
 
 
@@ -224,6 +229,8 @@ def show_rstar(res):
         t.add_row("status", "[red]infeasible[/red]: u_max > %g mm for every R on the grid" % res["u_cap_mm"])
     t.add_row("feasible", "%d / %d radii" % (res["n_feasible"], len(R)))
     t.add_row("PGA", "%.4f g" % res["waveform"]["pga_used_g"])
+    i = res["inputs"]
+    t.add_row("friction", "mu_s = %g, mu_k = %g (%s)" % (i["mu_s"], i["mu_k"], i["friction"]))
     console.print(Panel(t, title="R* result", expand=False))
     _warnings(res)
     _files(res)

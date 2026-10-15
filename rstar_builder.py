@@ -26,8 +26,8 @@ from fps_common.io import JsonChannel, run_json_main, make_outdir, write_csv, wr
 from fps_common.waveform import load_waveform, UNIT_TO_G  # noqa: E402
 
 G = fps_ref.G
-DEFAULTS = dict(mu=0.10, p=2.0, dt=0.002, v_eps=1e-3, r_min=0.15, r_max=6.0)
-RK4_STABILITY = 2.8          # dt * mu * g / v_eps must stay below this (CLAUDE.md §3.6)
+DEFAULTS = dict(mu=0.10, friction="stickslip", p=2.0, dt=0.002, v_eps=1e-3, r_min=0.15, r_max=6.0)
+RK4_STABILITY = 2.8          # friction="tanh": dt * mu * g / v_eps must stay below this (CLAUDE.md §3.6)
 
 
 # ----------------------------------------------------------------------------------------------- arguments
@@ -51,13 +51,20 @@ def add_common_args(ap, n_r_default):
     w.add_argument("--t-start", type=float, default=0.0, help="drop the record before this time [s]")
     w.add_argument("--duration", type=float, default=None, help="simulated length [s]; default = whole record")
     ph = ap.add_argument_group("physics and grid")
-    ph.add_argument("--mu", type=float, default=DEFAULTS["mu"], help="Coulomb friction coefficient")
+    ph.add_argument("--mu", type=float, default=DEFAULTS["mu"],
+                    help="friction coefficient: sets both --mu-s and --mu-k unless they are given")
+    ph.add_argument("--mu-s", type=float, default=None, help="static friction coefficient (default: --mu)")
+    ph.add_argument("--mu-k", type=float, default=None, help="kinetic friction coefficient (default: --mu)")
+    ph.add_argument("--friction", choices=["stickslip", "tanh"], default=DEFAULTS["friction"],
+                    help="stickslip: exact stick/slip with mu_s and mu_k; tanh: the original regularised model "
+                         "(one mu, needs mu_s = mu_k, uses --v-eps)")
     ph.add_argument("--p", type=float, default=DEFAULTS["p"], help="loss norm order (2 = RMS, inf = peak)")
     ph.add_argument("--r-min", type=float, default=DEFAULTS["r_min"], help="smallest R on the grid [m]")
     ph.add_argument("--r-max", type=float, default=DEFAULTS["r_max"], help="largest R on the grid [m]")
     ph.add_argument("--n-r", type=int, default=n_r_default, help="number of log-spaced R values")
     ph.add_argument("--dt", type=float, default=DEFAULTS["dt"], help="RK4 time step [s]")
-    ph.add_argument("--v-eps", type=float, default=DEFAULTS["v_eps"], help="friction regularisation [m/s]")
+    ph.add_argument("--v-eps", type=float, default=DEFAULTS["v_eps"],
+                    help="friction regularisation [m/s] (--friction tanh only)")
     o = ap.add_argument_group("output")
     o.add_argument("--out", help="output folder (default: out/<auto name>)")
     o.add_argument("--json", action="store_true", help="print one JSON result object on stdout (for scripts)")
@@ -85,8 +92,12 @@ def r_grid_from_args(a):
 
 
 def physics_from_args(a, wave):
-    if a.mu < 0:
-        raise InputError("--mu must be >= 0")
+    try:
+        mu_s, mu_k = fps_ref.friction_pair(a.mu, a.mu_s, a.mu_k)
+    except ValueError as e:
+        raise InputError(str(e))
+    if a.friction == "tanh" and mu_s != mu_k:
+        raise InputError("--friction tanh has a single mu; use --mu, or give --mu-s equal to --mu-k")
     if not a.p >= 1:
         raise InputError("--p must be >= 1 (use inf for the peak)")
     if a.dt <= 0 or a.v_eps <= 0:
@@ -94,7 +105,7 @@ def physics_from_args(a, wave):
     T = a.duration if a.duration is not None else wave.duration
     if T <= a.dt:
         raise InputError("--duration must be longer than one time step")
-    return dict(mu=a.mu, p=a.p, dt=a.dt, v_eps=a.v_eps, duration=T)
+    return dict(mu_s=mu_s, mu_k=mu_k, friction=a.friction, p=a.p, dt=a.dt, v_eps=a.v_eps, duration=T)
 
 
 # ----------------------------------------------------------------------------------------------- core
@@ -108,26 +119,31 @@ def lp_norm(A, p):
         return peak * (((A / peak) ** p).mean(0)) ** (1.0 / p)
 
 
-def sweep(wave, R, mu, p, dt, v_eps, duration, progress=None):
+def sweep(wave, R, mu_s, mu_k, friction, p, dt, v_eps, duration, progress=None):
     """Simulate every R in one batch. Returns the grid as arrays (u_max in mm, accelerations in g)."""
     R = np.asarray(R, float)
     fp, fpp = fps_ref.sphere(R)
     with np.errstate(invalid="ignore", over="ignore", divide="ignore"):
-        out = fps_ref.simulate(fp, fpp, wave.t, wave.a_g, mu=mu, dt=dt, T=duration, v_eps=v_eps,
-                               B=len(R), progress=progress)
+        out = fps_ref.simulate(fp, fpp, wave.t, wave.a_g, mu_s=mu_s, mu_k=mu_k, friction=friction, dt=dt,
+                               T=duration, v_eps=v_eps, B=len(R), progress=progress)
         m = fps_ref.metrics(out)
-        L = lp_norm(out["a_abs"] / G, p)
+        # the peak includes breakaway instants between samples (fps_ref.simulate, a_peak)
+        L = m["a_max_g"] if np.isinf(p) else lp_norm(out["a_abs"] / G, p)
     ok = np.isfinite(m["u_max"]) & np.isfinite(L)      # not finite = slider ran past the edge of the sphere
     warnings = []
-    if dt * mu * G / v_eps > RK4_STABILITY:
+    if friction == "tanh" and dt * mu_k * G / v_eps > RK4_STABILITY:
         warnings.append("dt*mu*g/v_eps = %.2f > %.1f: RK4 friction term may be unstable (CLAUDE.md §3.6)"
-                        % (dt * mu * G / v_eps, RK4_STABILITY))
+                        % (dt * mu_k * G / v_eps, RK4_STABILITY))
+    if out["n_cut"]:
+        warnings.append("%d time steps had more than %d stick/slip switches; the rest of those steps was skipped "
+                        "(reduce --dt)" % (out["n_cut"], fps_ref.MAX_PHASES))
     if (~ok).any():
         warnings.append("%d of %d radii diverged (slider left the spherical cap); they count as infeasible"
                         % ((~ok).sum(), len(R)))
     nan = lambda v: np.where(ok, v, np.nan)  # noqa: E731
     return dict(R_m=R, u_max_mm=nan(m["u_max"] * 1e3), a_rms_g=nan(m["a_rms_g"]), a_max_g=nan(m["a_max_g"]),
-                L_g=nan(L), ok=ok, params=dict(mu=mu, p=p, dt=dt, v_eps=v_eps, duration_s=duration),
+                L_g=nan(L), ok=ok, params=dict(mu_s=mu_s, mu_k=mu_k, friction=friction, p=p, dt=dt, v_eps=v_eps,
+                                               duration_s=duration),
                 warnings=warnings, series=out)
 
 
@@ -160,20 +176,21 @@ def grid_rows(sw, feas):
 
 GRID_HEADER = ["R_m", "u_max_mm", "a_rms_g", "a_max_g", "L_g", "feasible"]
 TIMESERIES_HEADER = ["t_s", "ag_g", "theta_rad", "theta_dot_rad_s", "theta_ddot_rad_s2", "u_mm", "u_dot_m_s",
-                     "u_ddot_m_s2", "a_abs_g"]
+                     "u_ddot_m_s2", "a_abs_g", "stuck"]
 
 
 def timeseries(sw, i):
     """Every simulated time step for grid radius i, as columns in TIMESERIES_HEADER order.
     u = x is the signed slider displacement relative to the dish, theta the polar angle with sin(theta) = u/R, so
         theta_dot = u_dot / c,  theta_ddot = u_ddot / c + u u_dot^2 / c^3,  c = sqrt(R^2 - u^2) = R cos(theta).
-    u_ddot is the relative acceleration (a_abs - ag); a_abs is the transmitted acceleration (CLAUDE.md §3.5)."""
+    u_ddot is the relative acceleration (a_abs - ag); a_abs is the transmitted acceleration (CLAUDE.md §3.5).
+    stuck is 1 while the slider is locked by static friction (then u_dot = u_ddot = 0 and a_abs = ag)."""
     s, R = sw["series"], sw["R_m"][i]
     u, ud, a_abs, ag = s["x"][:, i], s["v"][:, i], s["a_abs"][:, i], s["ag"]
     udd = a_abs - ag
     c = np.sqrt(R * R - u * u)
     return np.column_stack([s["t"], ag / G, np.arcsin(u / R), ud / c, udd / c + u * ud * ud / c ** 3, u * 1e3, ud,
-                            udd, a_abs / G])
+                            udd, a_abs / G, s["stuck"][:, i]])
 
 
 def write_timeseries(path, sw, i):
@@ -260,8 +277,13 @@ def describe(wave, phys):
     m = wave.meta
     pga = (r"PGA %.3f $g$ (scaled)" % m["pga_used_g"]) if m["pga_target_g"] else (r"PGA %.3f $g$" % m["pga_used_g"])
     p = r"\infty" if np.isinf(phys["p"]) else "%g" % phys["p"]
-    return r"%s, %s, $\mu=%g$, $p=%s$, %g s" % (m["name"].replace("_", " "), pga, phys["mu"], p,
-                                               phys["duration"])
+    if phys["mu_s"] == phys["mu_k"]:
+        mu = r"$\mu=%g$" % phys["mu_k"]
+    else:
+        mu = r"$\mu_s=%g$, $\mu_k=%g$" % (phys["mu_s"], phys["mu_k"])
+    if phys["friction"] == "tanh":
+        mu += r" (tanh, $v_\varepsilon=%g$)" % phys["v_eps"]
+    return r"%s, %s, %s, $p=%s$, %g s" % (m["name"].replace("_", " "), pga, mu, p, phys["duration"])
 
 
 # ----------------------------------------------------------------------------------------------- entry

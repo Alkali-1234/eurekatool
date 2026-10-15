@@ -5,7 +5,7 @@ import crypto from "node:crypto"
 import { TASKS_DIR } from "./paths"
 import { emit } from "./events"
 import type { Run, Task } from "../types"
-import { defaultParams, type Params, type Script } from "../params"
+import { defaultParams, migrateParams, type Params, type Script } from "../params"
 
 // Tasks live in web-data/tasks/<id>/task.json; run outputs in web-data/tasks/<id>/runs/<runId>/.
 // An in-memory copy (kept on globalThis so dev hot-reloads share it) is the source of truth while the server runs.
@@ -31,6 +31,11 @@ async function load() {
     try {
       const t = JSON.parse(await fs.readFile(path.join(TASKS_DIR, name, "task.json"), "utf8")) as Task
       let dirty = false
+      const params = migrateParams(t.params)
+      if (params !== t.params) {
+        t.params = params
+        dirty = true
+      }
       for (const r of t.runs) {
         // nothing survives a server restart: a run that was queued or running is gone
         if (r.status === "running" || r.status === "queued") {
@@ -81,7 +86,7 @@ export async function getTask(id: string): Promise<Task | undefined> {
 export async function createTask(name: string, script: Script, params?: Params): Promise<Task> {
   await ready()
   const now = new Date().toISOString()
-  const t: Task = { id: newId(), name, script, params: { ...defaultParams(script), ...params }, createdAt: now,
+  const t: Task = { id: newId(), name, script, params: { ...defaultParams(script), ...migrateParams(params ?? {}) }, createdAt: now,
     updatedAt: now, runs: [] }
   state.tasks.set(t.id, t)
   return save(t)

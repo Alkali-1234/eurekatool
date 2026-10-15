@@ -24,7 +24,7 @@ import { StatusBadge } from "@/components/status-badge"
 import { api, archiveUrl, fileUrl } from "@/lib/api"
 import { fmt } from "@/lib/format"
 import { dateTime, duration } from "@/lib/format"
-import type { CapRow, Grid, RstarResult, Run, Task, UmaxResult } from "@/lib/types"
+import type { CapRow, Grid, Inputs, RstarResult, Run, Task, UmaxResult } from "@/lib/types"
 
 const FILE_META: Record<string, { label: string; icon: React.ComponentType }> = {
   "grid.csv": { label: "R grid (grid.csv)", icon: FileSpreadsheetIcon },
@@ -37,6 +37,13 @@ const FILE_META: Record<string, { label: string; icon: React.ComponentType }> = 
   "umax_table.png": { label: "Figure (PNG)", icon: ImageIcon },
   "result.json": { label: "Full result (result.json)", icon: FileJsonIcon },
   "log.txt": { label: "Run log (log.txt)", icon: FileIcon },
+}
+
+/** Runs made before the static/kinetic split have one mu and always used the tanh model. */
+function frictionText(i: Inputs) {
+  if (i.mu_s === undefined || i.mu_k === undefined) return `μ = ${i.mu}, tanh friction, v_eps = ${i.v_eps} m/s`
+  const mu = i.mu_s === i.mu_k ? `μ = ${i.mu_k}` : `μ_s = ${i.mu_s}, μ_k = ${i.mu_k}`
+  return i.friction === "tanh" ? `${mu}, tanh friction, v_eps = ${i.v_eps} m/s` : `${mu}, stick-slip friction`
 }
 
 export function ResultsTab({ task, runId, onRunId }: { task: Task; runId: string | null; onRunId: (id: string) => void }) {
@@ -190,8 +197,8 @@ function RunResult({ task, run }: { task: Task; run: Run }) {
       )}
       <p className="text-xs text-muted-foreground">
         Waveform: <span className="font-mono">{data.waveform.trace_id ?? data.waveform.name}</span>, PGA{" "}
-        {fmt(data.waveform.pga_used_g)} g{data.waveform.pga_target_g ? " (scaled)" : ""}, simulated {fmt(data.inputs.duration_s)} s · μ ={" "}
-        {data.inputs.mu}, p = {data.inputs.p ?? "∞"}, dt = {data.inputs.dt} s, v_eps = {data.inputs.v_eps} m/s, {data.inputs.n_r} radii in [
+        {fmt(data.waveform.pga_used_g)} g{data.waveform.pga_target_g ? " (scaled)" : ""}, simulated {fmt(data.inputs.duration_s)} s · {frictionText(data.inputs)}, p ={" "}
+        {data.inputs.p ?? "∞"}, dt = {data.inputs.dt} s, {data.inputs.n_r} radii in [
         {data.inputs.r_min}, {data.inputs.r_max}] m.
       </p>
     </div>

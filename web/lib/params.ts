@@ -26,6 +26,7 @@ export const G = 9.80665
 export const RK4_STABILITY = 2.8
 export const MAX_CAPS = 10000
 export const UNITS = ["g", "m/s2", "cm/s2"] as const
+export const FRICTION_MODELS = ["stickslip", "tanh"] as const
 
 export type FieldDef = {
   key: string
@@ -70,8 +71,12 @@ export const FIELDS: FieldDef[] = [
     placeholder: "whole record", check: positive,
     help: "Simulated length [s]; default = whole record. Past the end of the record the ground is at rest" },
   // physics and grid
-  { key: "mu", flag: "--mu", label: "μ (friction)", group: "physics", kind: "number", check: nonNegative,
-    help: "Coulomb friction coefficient" },
+  { key: "mu_s", flag: "--mu-s", label: "μ_s (static)", group: "physics", kind: "number", check: nonNegative,
+    help: "Static friction coefficient: a slider at rest stays locked while the friction it needs is ≤ μ_s" },
+  { key: "mu_k", flag: "--mu-k", label: "μ_k (kinetic)", group: "physics", kind: "number", check: nonNegative,
+    help: "Kinetic friction coefficient while sliding; must be ≤ μ_s" },
+  { key: "friction", flag: "--friction", label: "Friction model", group: "physics", kind: "select",
+    help: "stickslip: exact stick/slip with μ_s and μ_k. tanh: the original regularised model (needs μ_s = μ_k, uses v_eps)" },
   { key: "p", flag: "--p", label: "Loss norm p", group: "physics", kind: "number", allowInf: true,
     check: (v) => (v >= 1 ? null : "must be ≥ 1 (or inf)"), help: "Loss norm order (2 = RMS, inf = peak)" },
   { key: "r_min", flag: "--r-min", label: "R min", unit: "m", group: "physics", kind: "number", check: positive,
@@ -83,7 +88,7 @@ export const FIELDS: FieldDef[] = [
   { key: "dt", flag: "--dt", label: "dt", unit: "s", group: "physics", kind: "number", check: positive,
     help: "RK4 time step [s]" },
   { key: "v_eps", flag: "--v-eps", label: "v_eps", unit: "m/s", group: "physics", kind: "number", check: positive,
-    help: "Friction regularisation [m/s]: sgn(v) → tanh(v / v_eps)" },
+    help: "Friction regularisation [m/s]: sgn(v) → tanh(v / v_eps). Only used by the tanh friction model" },
   // script-specific
   { key: "u_cap_mm", flag: "--u-cap-mm", label: "u_cap", unit: "mm", group: "script", kind: "number",
     scripts: ["rstar"], required: true, check: positive,
@@ -103,10 +108,17 @@ export function defaultParams(script: Script): Params {
   return {
     source: "elcentro", units: "g", channel: "", location: "", inventory: "", pre_filt: "",
     pga: "", t_start: "0", duration: "",
-    mu: "0.1", p: "2", r_min: "0.15", r_max: "6", n_r: script === "umax" ? "160" : "80", dt: "0.002",
+    mu_s: "0.1", mu_k: "0.1", friction: "stickslip", p: "2", r_min: "0.15", r_max: "6", n_r: script === "umax" ? "160" : "80", dt: "0.002",
     v_eps: "0.001",
     ...(script === "rstar" ? { u_cap_mm: "30" } : { u_min_mm: "25", u_max_mm: "40", du_mm: "1" }),
   }
+}
+
+/** Tasks saved before the static/kinetic split have one "mu": it becomes μ_s = μ_k (the friction model is the default). */
+export function migrateParams(p: Params): Params {
+  if (!("mu" in p)) return p
+  const { mu, ...rest } = p
+  return { ...rest, mu_s: rest.mu_s ?? mu, mu_k: rest.mu_k ?? mu }
 }
 
 export const isMseed = (path: string) => /\.(mseed|miniseed|ms)$/i.test(path)
@@ -156,6 +168,9 @@ export function validate(script: Script, p: Params): Record<string, string> {
     if (parts.length !== 4 || parts.some((v) => v === null || Number.isNaN(v)))
       err.pre_filt = "four comma-separated frequencies, e.g. 0.05,0.1,40,45"
   }
+  const mus = num(p.mu_s), muk = num(p.mu_k)
+  if (!err.mu_s && !err.mu_k && mus !== null && muk !== null && muk > mus) err.mu_k = "must be ≤ μ_s"
+  if (p.friction === "tanh" && !err.mu_s && !err.mu_k && mus !== muk) err.friction = "tanh needs μ_s = μ_k"
   const rmin = num(p.r_min), rmax = num(p.r_max)
   if (!err.r_min && !err.r_max && rmin !== null && rmax !== null && !(rmin < rmax)) err.r_max = "must be > R min"
   const dt = num(p.dt), dur = num(p.duration)
@@ -177,8 +192,8 @@ export function capCount(lo: number, hi: number, du: number) {
 /** Non-blocking warnings that mirror the script's own (RK4 stability, cap count). */
 export function warnings(script: Script, p: Params): string[] {
   const w: string[] = []
-  const dt = num(p.dt), mu = num(p.mu), ve = num(p.v_eps)
-  if (dt && mu !== null && ve && !Number.isNaN(dt * mu * ve)) {
+  const dt = num(p.dt), mu = num(p.mu_k), ve = num(p.v_eps)
+  if (p.friction === "tanh" && dt && mu !== null && ve && !Number.isNaN(dt * mu * ve)) {
     const k = (dt * mu * G) / ve
     if (k > RK4_STABILITY)
       w.push(`dt·μ·g/v_eps = ${k.toFixed(2)} > ${RK4_STABILITY}: the RK4 friction term may be unstable (CLAUDE.md §3.6)`)
@@ -199,6 +214,7 @@ export function toArgv(script: Script, p: Params, resolve: (id: string) => strin
     if (v === "") continue
     if (f.key === "units" && v === "g") continue                // argparse default
     if (f.key === "t_start" && Number(v) === 0) continue        // argparse default
+    if (f.key === "v_eps" && p.friction !== "tanh") continue    // only the tanh model reads it
     argv.push(f.flag, f.kind === "path" && v !== "elcentro" ? resolve(v) : v)
   }
   return argv

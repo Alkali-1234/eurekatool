@@ -78,7 +78,11 @@ export type WaveformMeta = {
 }
 
 export type Inputs = {
-  mu: number
+  /** Runs made before the static/kinetic split have only mu. */
+  mu?: number
+  mu_s?: number
+  mu_k?: number
+  friction?: "stickslip" | "tanh"
   p: number | null // null = inf (JSON has no Infinity)
   dt: number
   v_eps: number

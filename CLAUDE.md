@@ -49,7 +49,7 @@ EOF
 
 ### 3.1 Model and assumptions
 
-A point mass `m` (slider plus the mass it carries) slides on a fixed rigid dish with profile `y = f(x)` in the base frame. `f(0) = 0`, `f'(0) = 0`, `f'' ≥ 0`, `f` even (convex, symmetric). The base moves horizontally with ground acceleration `ẍ_g(t)` (1D; vertical ground motion neglected). Friction is Coulomb with one coefficient `μ` (static = kinetic). `x` is the horizontal displacement of the slider **relative to the base**, so travel `u = |x|`.
+A point mass `m` (slider plus the mass it carries) slides on a fixed rigid dish with profile `y = f(x)` in the base frame. `f(0) = 0`, `f'(0) = 0`, `f'' ≥ 0`, `f` even (convex, symmetric). The base moves horizontally with ground acceleration `ẍ_g(t)` (1D; vertical ground motion neglected). Friction is Coulomb with a static coefficient `μ_s` (holds a slider at rest) and a kinetic coefficient `μ_k ≤ μ_s` (acts while it slides); split on 2026-10-14, see §3.7. In §3.3–3.5 `μ` means `μ_k`, because those equations describe sliding. `x` is the horizontal displacement of the slider **relative to the base**, so travel `u = |x|`.
 
 ### 3.2 Kinematics
 
@@ -120,15 +120,63 @@ For code:
    λ = −f' − ẍ_g (1 + f'²) / (g − f' ẍ_g),       stick  ⇔  |λ| ≤ μ
    ```
 
-   With no ground motion this is `|f'(x)| ≤ μ`: **the slider rests anywhere in a band** (sphere: `|x| ≲ μR`). **Verified:** in a free-decay run (`μ = 0.02`, `R = 0.75`) the amplitude drops by 30.02 mm per half cycle (prediction `2μR = 30 mm`) and the slider stops at −8.7 mm, inside the 15 mm band.
+   With no ground motion this is `|f'(x)| ≤ μ`: **the slider rests anywhere in a band** (sphere: `|x| ≲ μR`). **Verified:** in a free-decay run (`μ = 0.02`, `R = 0.75`) the amplitude drops by 30.02 mm per half cycle (prediction `2μR = 30 mm`) and the slider stops at −8.7 mm, inside the 15 mm band. (That was the `tanh` model. With exact stick-slip, §3.7, it stops at −9.923 mm, exactly the last turning point. The extra 1.3 mm was creep caused by the regularisation.) The `μ` in this test is `μ_s`, the static coefficient.
 8. **Travel limit.** The slider must stay inside the dish: `u_max ≤ u_cap = (D_dish − D_slider)/2 − margin`. A radius that wins on acceleration but overruns `u_cap` is not a valid design (from notes).
 
 ### 3.6 Numerics
 
-- Friction is regularised, `σ → tanh(ẋ / v_eps)`; RK4; ground acceleration interpolated linearly onto half-steps.
+- `friction="tanh"` (the original model, Appendix A.2): friction is regularised, `σ → tanh(ẋ / v_eps)`; RK4; ground acceleration interpolated linearly onto half-steps. The rest of this subsection applies to this model only. For the default stick-slip model see §3.7.
 - **Timestep gotcha (from notes):** displacement converges long before acceleration, because regularised friction makes the acceleration channel stiff. At `dt = 0.005 s` `u_max` was converged to 3 digits while `a_rms` was inflated 68 % (0.0651 vs 0.0387). Use `dt = 0.002 s` and never validate convergence on displacement alone.
 - Stability: the friction term has stiffness about `μ g / v_eps`; RK4 needs `dt · μ g / v_eps ≲ 2.8`. With `μ = 0.1`, `v_eps = 1e-3 m/s`, `dt = 0.002 s` that product is 1.96.
 - **Verified** (`convergence.py` result, §6): with `v_eps = 1e-3`, results are identical for `dt = 2, 1, 0.5 ms`. Results do depend on `v_eps`: `u_max` 29.81 mm at 1e-3 versus 29.48 mm at 1e-4 (R = 0.275 m), 32.03 mm at 1e-2. Use `v_eps ≤ 1e-3`.
+
+### 3.7 Static vs kinetic friction (stick-slip, added 2026-10-14)
+
+**Why split μ.** In §3.3–3.5, μ appears in two different places. In the sliding EOM it is the friction a *moving* contact produces: that is the kinetic coefficient `μ_k`. In the stick condition (§3.5.7) it is the most friction a contact *at rest* can supply: that is the static coefficient `μ_s`. Real interfaces have `μ_s ≥ μ_k`, so the two roles are now separate parameters. `μ_s < μ_k` is rejected: a slider would break loose at `μ_s` and then be held back harder than the force that freed it.
+
+**The two states.**
+
+```
+sliding (σ = ±1):  (1 + f'²) ẍ + f' f'' ẋ² + g f' + μ_k σ (g + f'' ẋ² − f' ẍ_g) = −ẍ_g       (EOM with μ = μ_k)
+stuck   (ẋ = 0):   ẍ = 0,  ẍ_abs = ẍ_g,   as long as  |λ| ≤ μ_s
+                   λ = −f' − ẍ_g (1 + f'²)/(g − f' ẍ_g)                                       (§3.5.7)
+```
+
+**Stick band in ground-acceleration form.** Solve `λ = ±μ_s` for `ẍ_g` (λ decreases monotonically in `ẍ_g` while `N > 0`). Put `f' = tan θ` (local slope) and `μ_s = tan φ_s` (static friction angle):
+
+```
+stuck  ⇔  −g tan(φ_s + θ)  ≤  ẍ_g  ≤  g tan(φ_s − θ)
+```
+
+This is the inclined-plane result. The ground has to push the slider *uphill* harder (`φ_s + θ`) than downhill (`φ_s − θ`). If the slider rests on the slope (θ > 0), a ground acceleration of only `g tan(φ_s − θ)` breaks it loose back towards the centre.
+
+**Breakaway direction.** The slider leaves in direction `σ = sgn(λ)`. Leaving through the upper edge (`ẍ_g > g tan(φ_s − θ)`, so `λ < −μ_s`) gives sliding towards −x; leaving through the lower edge gives +x. Check on a flat dish: `λ = −ẍ_g/g`, the ground accelerates towards +x, and the slider slides towards −x relative to the dish.
+
+**Stopping.** When a sliding slider reaches `ẋ = 0`, the band is tested at that instant. If `ẍ_g` is inside, it locks. If not, it continues in the direction `sgn(λ)` gives (usually a reversal).
+
+**Consequences.**
+
+1. **Peak transmitted acceleration with `μ_s > μ_k`.** While stuck, `ẍ_abs = ẍ_g` rises to the band edge `g tan(φ_s ± θ)`. At breakaway it drops at once to the kinetic level `≈ g (f' + μ_k σ)`. So `a_max ≈ max( g tan(φ_s + θ_stick), g (μ_k + u_max/R) )`. **μ_s sets a floor on the peak.** Example (El Centro scaled to 0.349 g, 30 s, R = 1.55 m): `μ = 0.10` gives `a_max = 0.121 g`; `μ_s = 0.15, μ_k = 0.10` gives `0.160 g`.
+2. **The slider is stuck most of the time.** With `μ = 0.10` on that record it is locked about 80 % of the time (86 % with `μ_s = 0.15`). During those intervals the structure feels the full ground motion. That is fine because the ground acceleration is then below about `μ_s g`.
+3. **Higher μ_s shortens travel.** At `u_cap = 30 mm` (same record, `p = 2`), R\* is 0.288 m at `μ = 0.10` and 0.348 m at `μ_s = 0.15, μ_k = 0.10`. The `a_rms` values are almost the same (0.0558 vs 0.0560 g).
+
+**Numerics (`fps_ref.py`, `friction="stickslip"`).** Each element is either stuck or sliding with a frozen direction σ. Within a time step:
+
+- **Stuck:** the band is fixed (x does not move) and `ẍ_g` is piecewise linear, so the exit time is found exactly.
+- **Sliding:** RK4 runs to the end of the step. If `σ ẋ` ends ≤ 0, the stop is located on the cubic Hermite interpolant of `ẋ`, the state is integrated to it, and the band is tested there.
+
+Up to 8 such switches are resolved per step. A step needing more is cut and counted (`n_cut`), and the builders warn. There is no `v_eps` and no stiffness limit on `dt`. The returned `a_peak` includes the breakaway values, which fall between samples, and `metrics()` and the builders' `a_max` use it. **Verified** (2026-10-14):
+
+| Check | Result |
+|---|---|
+| μ = 0, R = 0.75, period | 1.73760 s (theory 1.73760 s) |
+| Free decay, `μ_s = μ_k = 0.02`, R = 0.75, from 100 mm | turning points −69.943, +39.922, −9.923 mm; locks at −9.923 mm (no creep) |
+| Breakaway, flat dish (R = 1e6 m), ramp `ẍ_g = 0.1 g/s`, `μ_s = 0.15`, `μ_k = 0.10` | slips at t = 1.500 s (theory 1.5 s); x(3 s) = −1.1032 m vs −1.103248 m exact |
+| Off-centre breakaway, R = 0.5, x₀ = 20 mm, `μ_s = 0.10`, ramp ±0.1 g/s | slips at 0.598 / 1.406 s vs theory `tan(φ_s − θ)` 0.5973 / `tan(φ_s + θ)` 1.4059 s (2 ms steps) |
+| El Centro 0.349 g, 30 s, `μ = 0.10`, dt = 4, 2, 1, 0.5, 0.2 ms | identical to 4 digits: R = 0.275: 29.43 mm, 0.0559 g rms, 0.2030 g peak; R = 1.55: 33.96 mm, 0.0546, 0.1213 |
+| Same, versus `tanh` as `v_eps → 0` | `u_max` (R = 0.275) 32.03 → 29.81 → 29.48 mm for `v_eps` 1e-2 → 1e-3 → 1e-4; stick-slip 29.43 mm is the limit |
+| `μ_s = 0.15`, `μ_k = 0.10`, dt = 2 vs 0.5 ms | identical: R = 0.275: 28.46 mm, 0.0564, 0.1998 g; R = 1.55: 33.51 mm, 0.0554, 0.1598 g |
+| `--friction tanh` reproduces the old baseline | R\* = 0.2752 m, 29.82 mm, 0.0558 g, 0.2042 g, the same as §6 |
 
 ## 4. Free-form dish and learnings (from notes, not re-checked)
 
@@ -226,6 +274,7 @@ Processing used for UGM: merge, demean, linear detrend, 2 % taper, `remove_respo
 | Spline closed forms vs numerical quadrature | **Pass** to about 1e-8 (one-off check, script not included) |
 | Convergence (below) | **Pass**: identical for `dt` = 2, 1, 0.5 ms at `v_eps = 1e-3` |
 | Small-angle peak formula `g (μ + u_max/R)` | 0.2083 g vs simulated 0.2042 g (R = 0.275 m) |
+| Stick-slip model, `μ_s` / `μ_k` split (2026-10-14) | **Pass**: period, free decay, breakaway thresholds, dt convergence (§3.7) |
 | **Reproduce the notes' sphere `a_rms = 0.0387 g`** | **FAIL, unresolved** (below) |
 
 Convergence, sphere `μ = 0.10`, El Centro scaled to 0.349 g, first 30 s:
@@ -266,7 +315,8 @@ The best *feasible* sphere (`u_max ≤ 30 mm`) in my runs is R ≈ 0.275 m with 
 2. **Resolve the discrepancy** in §6.1 before any table is built.
 3. **Build the `a_max` / `u_max` table.** Suggested definition: for each target PGA in a list and each `(R, μ)` on a grid, record `u_max` (peak slider displacement) and `a_max_actual` (peak absolute transmitted acceleration), and flag `u_max > u_cap` as infeasible. This feeds the three-variable correlation `u_cap` – `a_max_actual` – `C_est` (§1). `C_est` itself has no model in these notes yet.
 4. **Loss and design decisions** in §1: p-norm, residual-offset term, lower μ.
-5. Optional: request BMKG IA waveforms for real Indonesian near-field shaking (days to weeks). Use NZ.HVSC (1.7 g horizontal) only as a stress test beyond any design level, not as a design input.
+5. **Measure `μ_s` and `μ_k`** for the real slider interface (PTFE tape / HDPE on the dish material). The defaults `μ_s = μ_k = 0.10` are placeholders. By §3.7, `μ_s` sets a floor on `a_max`, so it matters on its own and not only through `μ_k`. Do not invent values.
+6. Optional: request BMKG IA waveforms for real Indonesian near-field shaking (days to weeks). Use NZ.HVSC (1.7 g horizontal) only as a stress test beyond any design level, not as a design input.
 
 ---
 

@@ -21,12 +21,16 @@ python3.13 -m venv .venv
 
 ## What is computed
 
-- Simulator: `fps_ref.py` (CLAUDE.md A.2): a batched RK4 over all R values, with Coulomb friction regularised by `tanh(v/v_eps)`. The only changes from the appendix are an optional `progress` callback and two extra returned series (`v`, the slider velocity, and `ag`, the ground acceleration at each step). Neither affects the numerics.
+- Simulator: `fps_ref.py` (CLAUDE.md A.2 and §3.7), a batched RK4 over all R values, with two friction models (`--friction`):
+  - **`stickslip`** (default): separate static and kinetic friction. A slider at rest stays locked (`a_abs = a_g`) while the friction it needs is `|λ| ≤ μ_s`; otherwise it slides with `μ_k`. Breakaways and stops are located inside the time step, so there is no `v_eps` and no stiffness limit on `dt`.
+  - **`tanh`**: the original appendix model, `sgn(v) → tanh(v/v_eps)` with one μ. It is kept unchanged so the older numbers can be reproduced. It needs `μ_s = μ_k`.
+- Friction flags: `--mu` sets both coefficients; `--mu-s` / `--mu-k` override it. `μ_k ≤ μ_s` is required.
+- With `μ_s > μ_k`, `a_abs` drops at each breakaway (from the static threshold to the kinetic level). The true peak falls between samples, so the reported `a_max` (and `L` for `--p inf`) includes the breakaway values. The peak of `a_abs_g` in the time-series CSV can therefore be slightly below the reported `a_max`.
 - Loss: `L_p(R) = (mean_t |a_abs|^p)^(1/p)` in g, where `a_abs` is the transmitted acceleration. `--p 2` (the default) is `a_rms`, the notes' L2 loss. `--p inf` is the peak.
 - Feasibility: `u_max(R) <= u_cap`. **R\*** is the minimiser of L over the feasible grid points. If no point is feasible, `status = "infeasible"` and `r_star_m = null`. A radius whose slider runs past the edge of the spherical cap (the simulation diverges) counts as infeasible and produces a warning.
-- **Time steps at R\*.** When a feasible R\* exists, every RK4 step at R\* is written to a CSV with columns `t_s, ag_g, theta_rad, theta_dot_rad_s, theta_ddot_rad_s2, u_mm, u_dot_m_s, u_ddot_m_s2, a_abs_g`. `u` is the signed slider displacement relative to the dish, θ = arcsin(u/R), θ̇ = u̇/(R cos θ), θ̈ = ü/(R cos θ) + u u̇²/(R cos θ)³, `u_ddot` is the relative acceleration (a_abs − a_g) and `a_abs` the transmitted one. The columns are taken from the same batched run as the grid, so max |u| and the peak/RMS of `a_abs` equal the reported `u_max`, `a_max` and `a_rms` exactly. About 1.9 MB per file for 30 s at dt = 0.002 s. `umax_table_builder.py` writes one file per distinct R\* (`timeseries_R0.275246m.csv`); caps that share an R\* share the file.
+- **Time steps at R\*.** When a feasible R\* exists, every RK4 step at R\* is written to a CSV with columns `t_s, ag_g, theta_rad, theta_dot_rad_s, theta_ddot_rad_s2, u_mm, u_dot_m_s, u_ddot_m_s2, a_abs_g, stuck` (`stuck` = 1 while static friction holds the slider; always 0 for `tanh`). `u` is the signed slider displacement relative to the dish, θ = arcsin(u/R), θ̇ = u̇/(R cos θ), θ̈ = ü/(R cos θ) + u u̇²/(R cos θ)³, `u_ddot` is the relative acceleration (a_abs − a_g) and `a_abs` the transmitted one. The columns are taken from the same batched run as the grid, so max |u| and the RMS of `a_abs` equal the reported `u_max` and `a_rms` exactly. The peak of `a_abs` matches `a_max` too, unless the peak is a breakaway instant between samples (see above). About 1.9 MB per file for 30 s at dt = 0.002 s. `umax_table_builder.py` writes one file per distinct R\* (`timeseries_R0.275246m.csv`); caps that share an R\* share the file.
 - `umax_table_builder.py` simulates the R grid once and applies each cap to that sweep. It gives the same R\* as running `rstar_builder.py` once per cap (checked at 30 and 33 mm).
-- Defaults: μ = 0.10, dt = 0.002 s, v_eps = 1e-3 m/s, R = geomspace(0.15, 6.0, 80) (160 for the table), duration = the whole record. **There is no default target PGA**: El Centro runs at its native 0.3188 g unless `--pga` is given.
+- Defaults: μ_s = μ_k = 0.10, `--friction stickslip`, dt = 0.002 s, v_eps = 1e-3 m/s (tanh only), R = geomspace(0.15, 6.0, 80) (160 for the table), duration = the whole record. **There is no default target PGA**: El Centro runs at its native 0.3188 g unless `--pga` is given.
 
 ## Waveform input
 
@@ -75,8 +79,8 @@ The wizard prints the equivalent command line, so any interactive run can be rep
 
 ## Verification (run 2026-10-12)
 
-- `reference/check_ref.py .` passes with the modified `fps_ref.py`: period 1.73760 s, first drop 30.021 mm, rest position −8.665 mm.
-- `rstar_builder.py --pga 0.349 --u-cap-mm 30 --duration 30` gives R\* = 0.2752 m, u_max = 29.82 mm, a_rms = 0.0558 g, a_max = 0.2042 g. This is identical to the verbatim `reference/compare_notes.py` and to CLAUDE.md §6.1.
+- `reference/check_ref.py .` passes with the modified `fps_ref.py`: period 1.73760 s, first drop 30.021 mm, rest position −8.665 mm. With stick-slip (2026-10-14) the rest position is −9.923 mm, exactly the last turning point: the old −8.665 mm was creep from the `tanh` regularisation.
+- `rstar_builder.py --pga 0.349 --u-cap-mm 30 --duration 30 --friction tanh` gives R\* = 0.2752 m, u_max = 29.82 mm, a_rms = 0.0558 g, a_max = 0.2042 g. This is identical to the verbatim `reference/compare_notes.py` and to CLAUDE.md §6.1. The stick-slip default with μ = 0.10 gives R\* = 0.2884 m, u_max = 29.75 mm, a_rms = 0.0558 g, a_max = 0.1993 g. More stick-slip checks are in CLAUDE.md §6.
 - A CSV copy of El Centro in m/s² gives the same R\*. The HVSC HN2 miniSEED loads with PGA 1.679 g (CLAUDE.md §5.5).
 
 **Caveat:** absolute numbers are fps_ref's. The CLAUDE.md §6.1 discrepancy with the notes (a_rms 0.0387 g) is still unresolved. For production tables, use the owner's own record (`--source path`) once that is settled.

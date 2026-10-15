@@ -6,10 +6,21 @@ import { CopyIcon, RotateCcwIcon, SlidersHorizontalIcon, TargetIcon, TerminalIco
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { FieldGroup } from "@/components/ui/field"
-import { ParamField } from "@/components/task/param-field"
+import { Field, FieldError, FieldGroup } from "@/components/ui/field"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { FieldHeading, ParamField } from "@/components/task/param-field"
 import { WaveformCard } from "@/components/task/waveform-card"
-import { capCount, commandLine, defaultParams, displayPath, toArgv, warnings, type Params, type Script } from "@/lib/params"
+import {
+  capCount,
+  commandLine,
+  defaultParams,
+  displayPath,
+  FRICTION_MODELS,
+  toArgv,
+  warnings,
+  type Params,
+  type Script,
+} from "@/lib/params"
 
 type Props = {
   script: Script
@@ -19,7 +30,8 @@ type Props = {
   onChangeMany: (patch: Params) => void
 }
 
-const PHYSICS = ["mu", "p", "r_min", "r_max", "n_r", "dt", "v_eps"]
+const PHYSICS = ["mu_s", "mu_k", "friction", "p", "r_min", "r_max", "n_r", "dt", "v_eps"]
+const FRICTION_ITEMS = FRICTION_MODELS.map((m) => ({ value: m, label: m === "stickslip" ? "Stick-slip" : "tanh (regularised)" }))
 
 export function SetupTab({ script, params, errors, onChange, onChangeMany }: Props) {
   const warn = warnings(script, params)
@@ -73,7 +85,7 @@ export function SetupTab({ script, params, errors, onChange, onChangeMany }: Pro
               <SlidersHorizontalIcon className="size-4" />
               Physics &amp; grid
             </CardTitle>
-            <CardDescription>Friction, loss norm, R grid and time stepping.</CardDescription>
+            <CardDescription>Static/kinetic friction, loss norm, R grid and time stepping.</CardDescription>
             <CardAction>
               <Button variant="ghost" size="sm" onClick={resetPhysics}>
                 <RotateCcwIcon data-icon="inline-start" />
@@ -83,9 +95,32 @@ export function SetupTab({ script, params, errors, onChange, onChangeMany }: Pro
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
             <FieldGroup className="grid grid-cols-2 gap-3">
-              {PHYSICS.map((k) => (
-                <ParamField key={k} k={k} params={params} errors={errors} onChange={onChange} />
-              ))}
+              {PHYSICS.map((k) =>
+                k === "friction" ? (
+                  <Field key={k} data-invalid={!!errors.friction || undefined}>
+                    <FieldHeading k="friction" />
+                    <Select
+                      items={FRICTION_ITEMS}
+                      value={params.friction || "stickslip"}
+                      onValueChange={(v) => v && onChange("friction", v as string)}
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {FRICTION_ITEMS.map((m) => (
+                          <SelectItem key={m.value} value={m.value}>
+                            {m.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {errors.friction && <FieldError>{errors.friction}</FieldError>}
+                  </Field>
+                ) : k === "v_eps" && params.friction !== "tanh" ? null : (
+                  <ParamField key={k} k={k} params={params} errors={errors} onChange={onChange} />
+                )
+              )}
             </FieldGroup>
             {warn.map((w) => (
               <Alert key={w}>
